@@ -1,0 +1,265 @@
+<script type="text/javascript" src="/emr/Scripts/NewItemTemplate.js"></script>
+<script type="text/javascript" src="/emr/Scripts/HillbillyCascade.js"></script>
+<style type="text/css">
+    .ms-formtable {
+        display: none;
+    }
+</style>
+<script type="text/javascript">
+
+    jQuery(document).ready(function ($) {
+
+        console.log("href = " + window.location.href);
+
+		configureAndPopulateDialog();
+
+		configureCascadingDropdowns();
+
+        ExecuteOrDelayUntilScriptLoaded(generateRandomApptID, "sp.js");
+    });
+
+    function configureCascadingDropdowns() {
+        var cascadeArray = new Array();
+
+        cascadeArray.push({
+            parentFormField: "Location", //Display name on form of field from parent list. Note: Seems MUST match parentFieldInChildList below
+            childList: "Providers", //List name of child list
+            childLookupField: "EMR_Provider", //Internal field name in Child List used in lookup
+            childFormField: "Provider", //Display name on form of the child field
+            parentFieldInChildList: "Location", //Internal field name in Child List of the parent field
+            firstOptionText: "< Select a Provider >"
+        });
+
+        $().HillbillyCascade(cascadeArray);
+    }
+
+	function configureAndPopulateDialog(){
+	    //Redirect back to Patient list on save
+	    var url = window.location.protocol + '//' + window.location.hostname + window.location.pathname;
+	    //onSaveUrl = url.replace("Schedule", "Patients");
+
+	    onSaveUrl = getParameterByName("Orig");
+	    console.log("New Schedule Item: onSaveUrl = " + onSaveUrl);
+
+	    //Set Source param to location to redirect to on save.
+	    //Use jQuery param() method to handle the url encoding.
+	    var queryParameters = {};
+	    queryParameters["Source"] = onSaveUrl;
+	    var params = $.param(queryParameters);
+	    if (params != '') {
+	        url = url + '?' + params;
+	    }
+
+	    console.log("New Schedule Item: rebuilt url = " + url);
+
+	    $().HillbillyTemplate({
+	        genericAlert: false,
+	        alertErrorText: "Form errors exist. Please fix form errors and try again",
+	        urlOnSave: url,
+	    });
+
+	    var patientID = getParameterByName("EMR_PatientID");
+	    console.log("EMR_PatientID: " + patientID);
+
+	    selectPatientID(patientID);
+	    //setTemporaryPatientID(patientID);
+
+	    appendPatientNameToHeader();
+	}
+
+
+    //NOTE: Using a lookup field in the New Item dialog appeared to have numerous problems.
+    //      So decided to remove PatientID lookup field from the EMR_Schedule content type
+    //      and just use a List Workflow to populate the field from the EMR_TempPatientID field.
+    function setTemporaryPatientID(patientID) {
+        $('[id ^=EMR_TempPatientID][id $=TextField]').val(patientID);
+    }
+
+    //NOTE: Could not get this code to work perfectly on the AWS server (kept populating incorrect Patient ID)
+    //      although this did work on SP2013 bizarrely.
+    function selectPatientID(patientID) {
+        var patientIDToSelect = patientID;
+
+        if (!patientID) {
+            $('[id ^=Lookup_EMR_PatientID][id $=LookupField]').prepend($('<option></option>').val(-1).html("Not Specified"));
+            patientIDToSelect = "Not Specified";
+        }
+
+		var found = doSelectPatientID(patientIDToSelect);
+		console.log('patientIDToSelect: ' + patientIDToSelect + ', found = ' + found);
+
+		//If there are hundreds of Patients then not all IDs are loaded into the DOM on page load, so we won't find a match.
+		//Unfortunately adding in the option manually and then selecting it does not work (maybe missing from some MS internal array?)
+		//So we need to use the EMR_TempPatientID field instead and then a workflow to populate the lookup field.
+		/* Code below DOES NOT work. */
+		if (!found){
+            $('[id ^=Lookup_EMR_PatientID][id $=LookupField]').prepend($('<option></option>').val(patientIDToSelect).html(patientIDToSelect));
+		}
+
+		var found = doSelectPatientID(patientIDToSelect);
+		/* */
+
+		//found = false;
+
+		if (!found){
+			//Make sure the first Patient ID in the drop down is not left selected.
+            $('[id ^=Lookup_EMR_PatientID][id $=LookupField]').prepend($('<option></option>').val(-1).html("Not Found"));
+            patientIDToSelect = "Not Found";
+			doSelectPatientID(patientIDToSelect);
+		}
+    }
+
+	function doSelectPatientID(patientIDToSelect){
+		var found = false;
+
+        //See: https://stackoverflow.com/questions/3744289/how-to-select-an-option-by-its-text
+        $('[id ^=Lookup_EMR_PatientID][id $=LookupField] option:contains(' + patientIDToSelect + ')').each(function () {
+            if ($(this).text() == patientIDToSelect) {
+                $(this).prop("selected", true);
+                $(this).parent().val($(this).val()); // Either of these two methods works in Chrome and IE.
+				found = true;
+                return false;
+            }
+            return true;
+        });
+
+		return found;
+	}
+
+    //Note: Can be called recursively if a clash occurs.
+    function generateRandomApptID() {
+        //Let's generate a randon ApptID in the range 55000000 - 55999999
+        var apptID = getRandomInt(0.0, 1000000.0) + 55000000;
+        apptID = "A" + apptID;
+        console.log(apptID);
+
+        //Make sure it is not already in use.
+        var queryString = buildApptIDCamlQueryString(apptID);
+        console.log(queryString);
+
+        var camlQuery = new SP.CamlQuery();
+        camlQuery.set_viewXml(queryString);
+
+        var fieldProperties = {};
+        var usefulData = {};
+        usefulData["RandomApptID"] = apptID;
+        var includeFields = "Include(EMR_AppointmentID)";
+        var listId = _spPageContextInfo.pageListId;
+
+        //May need to display wait dialog... (Particularly if server is slow e.g. first request after iis restart)
+        getListItemsCamlQueryInclude(listId, camlQuery, fieldProperties, includeFields, usefulData)
+        .then(retryIfApptIDExists, logError);
+    }
+
+    function retryIfApptIDExists(items, itemProperties, usefulData) {
+        var itemCount = 0;
+        itemCount = $(items.get_data()).length;
+
+        if (itemCount == 0) {
+            setApptIDField(usefulData.RandomApptID);
+        } else {
+            generateRandomApptID();
+        }
+    }
+
+    //Note: The Appt ID field is hidden here. User does not need to know about it.
+    function setApptIDField(apptID) {
+
+        //This somewhat hacky check makes sure that if there is no Patient ID the form won't save.
+        if (getParameterByName("EMR_PatientID")) {
+            $('[id ^=EMR_AppointmentID][id $=TextField]').val(apptID);
+
+            setTestFieldData();//TODO: Remove
+        }
+    }
+
+    function setTestFieldData() {
+        $('[id ^=EMR_AppointmentDate][id $=DateTimeFieldDate]').val("2/21/2018");
+    }
+
+
+    function buildApptIDCamlQueryString(apptID) {
+        var queryString = '<View><Query><Where><Eq><FieldRef Name="EMR_AppointmentID" /><Value Type="Text">' + apptID + '</Value></Eq></Where></Query></View>';
+        return queryString;
+    }
+
+    function appendPatientNameToHeader() {
+
+        var lastName = getParameterByName("EMR_PatientLastName");
+        var firstName = getParameterByName("EMR_PatientFirstName");
+
+        var patientName = null;
+        if (lastName || firstName) {
+            var patientName = lastName + ", " + firstName;
+
+            $('h1:contains("Schedule - New Item")').after("<h2>" + patientName + "</h2>");
+        } else {
+            $('h1:contains("Schedule - New Item")').after("<span class='ms-error'>No Patient Specified. Please cancel and use the 'Add Schedule' menu item from a Patient record.</span>");
+        }
+
+        console.log("New Schedule Item: patientName = " + patientName);
+    }
+
+
+</script>
+<h1> Schedule - New Item </h1>
+<div>
+    <p>
+        <table>
+            <!-- 
+            <tr>
+                <td width="113" class="ms-formlabel" nowrap="true" valign="top">
+                    <h3 class="ms-standardheader">
+                        <span style="white-space: nowrap">
+                            Patient ID:
+                            <span title="This is a required field." class="ms-accentText"> *</span>
+                        </span>
+                    </h3>
+                </td>
+                <td>
+                    <span class="hillbillyForm" data-displayName="Patient ID"></span>
+                </td>
+            </tr>
+            -->
+            <tr>
+                <td width="113" class="ms-formlabel" nowrap="true" valign="top">
+                    <h3 class="ms-standardheader">
+                        <span style="white-space: nowrap">
+                            Location:
+                            <span title="This is a required field." class="ms-accentText"> *</span>
+                        </span>
+                    </h3>
+                </td>
+                <td>
+                    <span class="hillbillyForm" data-displayName="Location"></span>
+                </td>
+            </tr>
+            <tr>
+                <td width="113" class="ms-formlabel" nowrap="true" valign="top">
+                    <h3 class="ms-standardheader">
+                        <span style="white-space: nowrap">
+                            Provider:
+                            <span title="This is a required field." class="ms-accentText"> *</span>
+                        </span>
+                    </h3>
+                </td>
+                <td>
+                    <span class="hillbillyForm" data-displayName="Provider"></span>
+                </td>
+            </tr>
+            <tr>
+                <td width="113" class="ms-formlabel" nowrap="true" valign="top">
+                    <h3 class="ms-standardheader">
+                        <span style="white-space: nowrap">
+                            Start Time:
+                            <span title="This is a required field." class="ms-accentText"> *</span>
+                        </span>
+                    </h3>
+                </td>
+                <td>
+                    <span class="hillbillyForm" data-displayName="Start Time"></span>
+                </td>
+            </tr>
+        </table>
+    </p>
+</div>
