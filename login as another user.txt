@@ -1,0 +1,7 @@
+http://prdspace.awp.nhs.uk/_layouts/closeConnection.aspx?loginasanotheruser=true
+
+
+Test16Read 
+Test16Pub
+
+P/w for both is Sharepoint16
